@@ -1,3 +1,9 @@
 quill - used for wysiwyg
 
 https://github.com/quilljs/quill/releases/tag/v1.3.6
+
+add comments
+contribute to case
+
+orbitrators
+compliance
