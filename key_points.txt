@@ -2,8 +2,17 @@ quill - used for wysiwyg
 
 https://github.com/quilljs/quill/releases/tag/v1.3.6
 
-add comments
-contribute to case
+cities database downloaded from kaggle
 
-orbitrators
-compliance
+https://www.kaggle.com/datasets/max-mind/world-cities-database
+
+
+
+
+Features:
+	add comments
+	contribute to case
+
+	orbitrators
+	compliance
+
