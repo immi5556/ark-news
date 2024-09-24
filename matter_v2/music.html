@@ -1,0 +1,564 @@
+﻿<html>
+<head>
+    <script src="https://connect.facebook.net/en_US/fbinstant.6.3.js"></script>
+    <script src="matter.min.js"></script>
+    <script src="Tone.js"></script>
+    <style type="text/css">
+        @font-face {
+            font-family: "GloriaHallelujah";
+            src: url(./font/GloriaHallelujah-Regular.ttf) format("truetype");
+        }
+
+        @font-face {
+            font-family: "Slackey";
+            src: url('https://fonts.googleapis.com/css2?family=B612+Mono&amp;family=Roboto+Mono:wght@400;600&amp;family=Slackey&amp;display=swap') format("truetype");
+        }
+    </style>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            font-weight: bold;
+            font-size: 1.25rem;
+            overflow: hidden;
+        }
+
+        .container {
+            color: white;
+            z-index: 10;
+            position: relative;
+            background-color: transparent;
+            width: 100%;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            background-color: black;
+        }
+    </style>
+</head>
+<body>
+
+    <div>
+        <div class="container">
+            <!-- 	start typing! -->
+            <button style="display:none;" id="start">click here, then start typing</button>
+        </div>
+        <canvas id="canvas"></canvas>
+    </div>
+    <h1 style="font-family: GloriaHallelujah; position: absolute; top: 50%; left: 50%; margin-right: -50%; transform: translate(-50%, -50%); color: white; ">Press Keys to Start Music...</h1>
+
+    <script>
+        // overwrite getValue from tone analyser
+        class AnalyserByteData extends Tone.Analyser {
+
+            getValue() {
+                this._analysers.forEach((analyser, index) => {
+                    const buffer = this._buffers[index];
+                    if (this._type === "fft") {
+                        analyser.getByteFrequencyData(buffer);
+                    } else if (this._type === "waveform") {
+                        analyser.getByteTimeDomainData(buffer);
+                    }
+                });
+                if (this.channels === 1) {
+                    return this._buffers[0];
+                } else {
+                    return this._buffers;
+                }
+            }
+
+            get size() {
+                return this._analysers[0].frequencyBinCount;
+            }
+
+            set size(size) {
+                this._analysers.forEach((analyser, index) => {
+                    analyser.fftSize = size * 2;
+                    this._buffers[index] = new Uint8Array(size);
+                });
+            }
+        }
+
+        // === TOP LEVEL VARS ===
+        // matter js
+        let Engine = Matter.Engine,
+            Render = Matter.Render,
+            World = Matter.World,
+            Runner = Matter.Runner,
+            Bodies = Matter.Bodies,
+            Composite = Matter.Composite;
+        let engine = Engine.create();
+        const imprints = [];
+
+        // animations
+        let isPulsingIn = false;
+        let isPulsingOut = false;
+        let pulseOpacity = 0;
+        const canvas = document.getElementById('canvas')
+
+        // tone js
+        // 'timeout' or 'keyCount'
+        const KEY_CHANGE_MODE = 'keyCount'
+        let changeKeyTimeout = null
+        let silenceBackgroundTimeout = null
+        let isBackgroundPlaying = false
+        let keyPressesUpperBoundary = 20
+        let keyPresses = 0
+        let currentKey = 'C'
+        let transposition = 0
+        const previousNote = {
+            baseNote: null,
+            octave: null
+        }
+
+        // maps
+        const keyToColorDict = {
+            'C': '#FFC0CB',
+            'G': '#EB6662',
+            'D': '#F7B172',
+            'A': '#ffe375',
+            'E': '#F7D37E',
+            'B': '#82C881',
+            'F#': '#81c896',
+            'C#': '#1D8F94',
+            'G#': '#33a4b5',
+            'D#': '#203d85',
+            'A#': '#632085',
+            'F': '#c42bcc'
+        }
+
+        const keyToPitchDict = {
+            'a': 'C',
+            'b': 'D',
+            'c': 'E',
+            'd': 'G',
+            'e': 'C',
+            'f': 'E',
+            'g': 'C',
+            'h': 'A',
+            'i': 'C',
+            'j': 'G',
+            'k': 'E',
+            'l': 'G',
+            'm': 'D',
+            'n': 'A',
+            'o': 'C',
+            'p': 'G',
+            'q': 'E',
+            'r': 'D',
+            's': 'E',
+            't': 'D',
+            'u': 'G',
+            'v': 'A',
+            'w': 'A',
+            'x': 'D',
+            'y': 'C',
+            'z': 'A'
+        }
+
+        // UI
+        let words = ''
+        let selectAll = false
+        const textarea = document.querySelector('#sentence');
+        let currentTextSpot = 0
+        const container = document.querySelector('.container')
+        const button = document.getElementById('start')
+        button.addEventListener('click', () => {
+            button.style.display = 'none'
+        });
+
+        // set canvas to correct size
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas)
+        window.onload = resizeCanvas
+
+        // === TONE JS ===
+        // globals
+        Tone.Transport.bpm.value = 120
+
+        // synths
+        const synth = new Tone.PolySynth().toDestination();
+        synth.set({
+            "portamento": 0.0,
+            "oscillator": {
+                "type": "square4"
+            },
+            "envelope": {
+                "attack": 2,
+                "decay": 3,
+                "sustain": 0.6,
+                "release": 2
+            }
+        })
+        synth.volume.value = -2
+
+        const bgSynth = new Tone.PolySynth();
+        bgSynth.set({
+            "portamento": 0.0,
+            "oscillator": {
+                "type": "square4"
+            },
+            "envelope": {
+                "attack": 2,
+                "decay": 3,
+                "sustain": 0.6,
+                "release": 10
+            }
+        })
+        bgSynth.volume.value = -18
+
+        // effects and routing
+        const chorus = new Tone.Chorus(0.3, 1.5, 0.7).start();
+        const widener = new Tone.StereoWidener(1).toDestination()
+        const delay = new Tone.PingPongDelay("4n", 0.2)
+        const reverb = new Tone.Reverb(6.5).toDestination()
+        const analyser = new AnalyserByteData('fft', 256)
+
+        bgSynth.connect(chorus)
+        chorus.connect(widener)
+        synth.connect(delay)
+        delay.connect(reverb)
+        synth.connect(reverb)
+        bgSynth.connect(reverb)
+        bgSynth.connect(delay)
+        synth.connect(analyser)
+
+        const updateText = (e) => {
+            if (e.key === 'Backspace' && selectAll) {
+                selectAll = false
+                words = ''
+                return container.innerText = words
+            }
+            if (e.ctrlKey && e.key === 'a') {
+                return selectAll = true
+            } else {
+                selectAll = false
+                window.getSelection().removeAllRanges()
+            }
+            if (keyToPitchDict.hasOwnProperty(e.key.toLowerCase()) || e.key === ' ') {
+                words += e.key
+            } else if (e.key === 'Enter') {
+                words += '\n'
+            } else if (e.key === 'Backspace') {
+                words = words.substring(0, words.length - 1);
+            }
+            container.innerText = words
+        }
+
+        const triggerBackgroundChord = () => {
+            bgSynth.releaseAll()
+            const baseNote = `${currentKey}2`
+            const baseNoteFrequency = Tone.Frequency(baseNote)
+            const notes = [
+                baseNote,
+                baseNoteFrequency.transpose(7),
+                baseNoteFrequency.transpose(12),
+                baseNoteFrequency.transpose(16)
+            ]
+            bgSynth.triggerAttack(notes)
+            isBackgroundPlaying = true
+        }
+
+        const setChangeKeyTimeout = () => {
+            if (changeKeyTimeout) {
+                clearTimeout(changeKeyTimeout)
+            }
+            changeKeyTimeout = setTimeout(() => {
+                changeKey()
+            }, 2000)
+        }
+
+        const setSilenceBackgroundTimeout = () => {
+            if (silenceBackgroundTimeout) {
+                clearTimeout(silenceBackgroundTimeout)
+            }
+            silenceBackgroundTimeout = setTimeout(() => {
+                bgSynth.releaseAll()
+                isBackgroundPlaying = false
+            }, 3000)
+        }
+
+        const changeKey = () => {
+            transposition += 7
+            const transposedNote = Tone.Frequency(`${currentKey}4`).transpose(7).toNote()
+            const splitTransposedNote = transposedNote.split('')
+            const accidental = Number.isNaN(Number(splitTransposedNote[1])) ? splitTransposedNote[1] : ''
+            const transposedBaseNote = splitTransposedNote[0] + accidental
+            currentKey = transposedBaseNote
+            triggerBackgroundChord()
+        }
+
+        const handleIncrementKeyPress = () => {
+            keyPresses++
+            if (keyPresses > keyPressesUpperBoundary) {
+                keyPresses = 0;
+                keyPressesUpperBoundary = getRandom(8, 30)
+                changeKey()
+            }
+        }
+
+        document.body.addEventListener('keydown', (e) => {
+            if (e.key === ' ') {
+                currentTextSpot += 40
+            }
+            // console.log(e.key)
+            if (KEY_CHANGE_MODE === 'timeout') {
+                setChangeKeyTimeout()
+            }
+            if (KEY_CHANGE_MODE === 'keyCount') {
+                handleIncrementKeyPress()
+                setSilenceBackgroundTimeout()
+            }
+            // updateText(e)
+            if (e.key === 'Enter') {
+                changeKey()
+            }
+            const key = e.key.toLowerCase()
+            const octaves = [4, 5]
+            let octave = octaves[Math.floor(Math.random() * octaves.length)]
+            let baseNote = keyToPitchDict[key]
+            if (!baseNote) return
+            if (octave === previousNote.octave) {
+                const filteredOctaves = octaves.filter(octaveOption => octaveOption !== octave)
+                octave = filteredOctaves[Math.floor(Math.random() * filteredOctaves.length)]
+            }
+            previousNote.octave = octave
+            previousNote.baseNote = baseNote
+            const note = `${baseNote}${octave}`
+            const now = Tone.now()
+            if (!isBackgroundPlaying) {
+                Tone.Transport.start()
+                isPulsingIn = true
+                triggerBackgroundChord()
+            }
+            const transposedNote = Tone.Frequency(note).transpose(transposition).toNote()
+            const splitTransposedNote = transposedNote.split('')
+            const accidental = Number.isNaN(Number(splitTransposedNote[1])) ? splitTransposedNote[1] : ''
+            const transposedBaseNote = splitTransposedNote[0] + accidental
+            synth.triggerAttackRelease(`${transposedBaseNote}${octave}`, '16n')
+
+
+            const dimensions = getRandom(40, 60);
+            currentTextSpot += dimensions
+            if (currentTextSpot >= window.innerWidth) {
+                currentTextSpot = dimensions
+            }
+            const x = currentTextSpot
+            let letter = Bodies.rectangle(x, -80, dimensions, dimensions, {
+                frictionAir: getRandom(0.1, 0.2),
+                render: {
+                    fillStyle: "#FFFFFF",
+                    initialSpacing: getRandom(-5, -15),
+                    trailFade: getRandom(100, 300),
+                    elapsedTime: 0,
+                    text: {
+                        fillStyle: "#FFFFFF",
+                        content: e.key,
+                        size: dimensions,
+                        color: keyToColorDict[currentKey]
+                    },
+                }
+            });
+
+            World.add(engine.world, [letter]);
+
+        })
+
+        // matter js stuff
+        const drawTrail = ({ context, color, content, trailLength, initialSpacing }) => {
+            for (let i = 1; i <= trailLength; i++) {
+                context.translate(0, i * initialSpacing)
+                context.textBaseline = 'middle'
+                context.textAlign = 'center'
+                context.fillStyle = hexToRgba(color, (1 / trailLength) * (trailLength - i))
+                context.fillText(content, 0, 0)
+            }
+        }
+
+        const addLetterImprint = ({ position, color, content, body, font }) => {
+            imprints.push({ position, color, content, body, font, opacity: 0.4 })
+        }
+
+        const drawLetterImprints = (context) => {
+            imprints.forEach((imprint, i) => {
+                context.save()
+                context.translate(imprint.position.x, imprint.position.y)
+                const x = imprint.body.vertices[1].x - imprint.body.vertices[0].x;
+                const y = imprint.body.vertices[1].y - imprint.body.vertices[0].y;
+                const radian = Math.atan2(y, x);
+                context.rotate(radian);
+                context.textBaseline = 'middle'
+                context.textAlign = 'center'
+                context.fillStyle = hexToRgba(imprint.color, imprint.opacity)
+                context.font = imprint.font
+                context.fillText(imprint.content, 0, 0)
+                context.restore()
+                imprint.opacity -= 0.004
+                if (imprint.opacity <= 0) {
+                    imprints.splice(i, 1)
+                }
+            })
+        }
+
+        // animations
+        let previousTime = 0;
+
+        function draw(time) {
+            var bodies = Matter.Composite.allBodies(engine.world)
+            var context = canvas.getContext('2d')
+
+            window.requestAnimationFrame(draw)
+
+            context.fillStyle = '#000000'
+            context.fillRect(0, 0, canvas.width, canvas.height)
+            context.globalAlpha = 1
+            if (Tone.Transport.seconds > 0) {
+                if (isPulsingIn && isBackgroundPlaying) {
+                    pulseOpacity += 0.0025
+                } else if (isPulsingOut || !isBackgroundPlaying) {
+                    if (pulseOpacity > 0) {
+                        pulseOpacity -= 0.0025
+                    }
+                }
+
+                if (pulseOpacity > 0.3) {
+                    isPulsingIn = false
+                    isPulsingOut = true
+                } else if (pulseOpacity < 0) {
+                    isPulsingOut = false
+                    isPulsingIn = true
+                }
+                context.fillStyle = hexToRgba(keyToColorDict[currentKey], pulseOpacity)
+                context.fillRect(0, 0, canvas.width, canvas.height)
+                context.globalAlpha = 1
+            }
+            // draw visualizer
+            const freqData = analyser.getValue()
+
+            let barWidth = (canvas.width / 100) * 2.5
+            let barHeight
+            let x = 0
+
+            for (let i = 0; i < 100; i++) {
+                barHeight = freqData[i] * 6
+                context.fillStyle = hexToRgba(keyToColorDict[currentKey], 0.01);
+                context.fillRect(x, canvas.height - barHeight / 2, barWidth, barHeight / 2)
+
+                x += barWidth + 1
+            }
+
+            context.lineTo(canvas.width, canvas.height / 2)
+            context.stroke();
+
+            // draw letters
+            context.beginPath()
+
+            let deltaTime = 0
+            if (time) {
+                deltaTime = time - previousTime
+                previousTime = time
+            }
+
+            for (var i = 0; i < bodies.length; i += 1) {
+                var part = bodies[i]
+                if (part.render.text) {
+                    var fontsize = 30
+                    var fontfamily = part.render.text.family || 'GloriaHallelujah'
+                    var color = part.render.text.color || '#FF0000'
+                    if (part.render.text.size) {
+                        fontsize = part.render.text.size
+                    } else if (part.circleRadius) {
+                        fontsize = part.circleRadius / 2
+                    }
+                    var content = ''
+                    // context.shadowBlur = 40;
+                    // context.shadowColor = color;
+                    if (typeof part.render.text === 'string') {
+                        content = part.render.text
+                    } else if (part.render.text.content) {
+                        content = part.render.text.content
+                    }
+                    context.fillStyle = 'white'
+                    context.save()
+                    // draw og letter
+                    context.translate(part.position.x, part.position.y)
+                    const x = bodies[i].vertices[1].x - bodies[i].vertices[0].x;
+                    const y = bodies[i].vertices[1].y - bodies[i].vertices[0].y;
+                    const radian = Math.atan2(y, x);
+                    context.rotate(radian);
+                    context.textBaseline = 'middle'
+                    context.textAlign = 'center'
+                    context.fillStyle = color
+                    context.font = fontsize + 'px ' + fontfamily
+                    context.fillText(content, 0, 0)
+                    // draw trail
+                    part.render.elapsedTime += deltaTime
+                    if (part.render.elapsedTime >= part.render.trailFade) {
+                        addLetterImprint({ position: { x: part.position.x, y: part.position.y }, color, content, body: bodies[i], font: fontsize + 'px ' + fontfamily })
+                        part.render.elapsedTime = 0
+                    }
+                    // drawTrail({ context, color, content, trailLength: 5, initialSpacing: -2 * (part.velocity.y * 4) })
+                    context.restore()
+                    const { min, max } = part.bounds
+                    const height = max.y - min.y
+
+                    if (part.position.y - height >= window.innerHeight) {
+                        World.remove(engine.world, part)
+                    }
+                }
+            }
+            drawLetterImprints(context)
+            Engine.update(engine, 1000 / 60);
+        }
+        draw()
+
+        // helper functions
+        function getRandom(min, max) {
+            return Math.random() * (max - min) + min;
+        }
+
+        function hexToRgba(hex, opacity) {
+            var c;
+            if (/^#([A-Fa-f0-9]{3}){1,2}$/.test(hex)) {
+                c = hex.substring(1).split('');
+                if (c.length == 3) {
+                    c = [c[0], c[0], c[1], c[1], c[2], c[2]];
+                }
+                c = '0x' + c.join('');
+                return 'rgba(' + [(c >> 16) & 255, (c >> 8) & 255, c & 255].join(',') + `,${opacity})`;
+            }
+            throw new Error('Bad Hex');
+        }
+
+    </script>
+    <script>
+        FBInstant.initializeAsync()
+            .then(function () {
+                var progress = 0;
+                var cint = setInterval(() => {
+                    if (progress > 95) {
+                        clearInterval(cint);
+                        FBInstant.startGameAsync().then(() => console.log('facebook game started'))
+                    }
+                    FBInstant.setLoadingProgress(progress);
+                    progress += 5;
+                }    , 500);
+                    });
+    </script>
+</body>
+</html>
